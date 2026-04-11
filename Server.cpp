@@ -48,7 +48,7 @@ class epoll_server{
         // 2.将监听fd加入epoll(LT)
         struct epoll_event ev; 
         ev.events = EPOLLIN; //LT模式监听可读事件
-        ev.data.fd = listen_fd;  //知道是哪个socket
+        ev.data.fd = listen_fd;  //ev.data.fd存储socket, epoll_wait返回时通过这个就知道是哪个socket就绪
         epoll_ctl(epoll_fd,EPOLL_CTL_ADD,listen_fd,&ev);  //加进去
 
         std::cout<<"[Server] start on port "<<port<<std::endl;
@@ -58,19 +58,33 @@ class epoll_server{
       void run(){
         while(true){
             int nfds = epoll_wait(epoll_fd,events_,Max_events,-1);
-
-
+            
+            for (int i = 0; i < nfds; i++){
+              int fd = events_[i].data.fd;
+              uint32_t ev = events_[i].events;
+              
+              if(fd==listen_fd){ //新连接
+                handle_accept();
+              }
+              else if(ev & EPOLLIN){ //可读事件(客户端在发信息)
+                handle_read(fd);
+              }
+              else if(ev & EPOLLOUT){ //可写时间(服务器给客户端发信息)
+                //暂时不要
+              }
+              else if(ev & (EPOLLERR|EPOLLHUP)){
+                close_client(fd,"Error/Hangup");
+              }
+            }
         }
-
-
-
-
-
-
       }
+       
+
+      private:
+        void handle_accept(){}
+        void handle_read(int fd){}
+        void close_client(int fd,const char* reason){}
 
 
 
-
-
-}//
+};//
