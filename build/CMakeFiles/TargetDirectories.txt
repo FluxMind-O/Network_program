@@ -1,0 +1,3 @@
+/home/onemind/practice/Internet_code/build/CMakeFiles/server.dir
+/home/onemind/practice/Internet_code/build/CMakeFiles/edit_cache.dir
+/home/onemind/practice/Internet_code/build/CMakeFiles/rebuild_cache.dir

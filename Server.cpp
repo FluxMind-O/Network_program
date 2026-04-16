@@ -1,168 +1,152 @@
-#include"IO.cpp"
+#include"Server.h"
 #include <arpa/inet.h>  // 是inet_ntop 所需要的
 
-class epoll_server{
-    private:
-      int listen_fd;
-      int epoll_fd;
-      struct epoll_event events_[Max_events];  //建立输出缓冲区（内核->用户态）
+epoll_server::epoll_server(int port){
+    listen_fd = socket(AF_INET,SOCK_STREAM,0);   //创建监听socket
+    if(listen_fd==-1){
+       perror("socket");
+       exit(EXIT_FAILURE);
+    }
 
-      //存客户端信息，fd->ip
-      std::unordered_map<int,std::string>client_s;
+    //设置端口复用
+    int reuse = 1;
+    setsockopt(listen_fd,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));
 
-    public:
-      epoll_server(int port){
-        listen_fd = socket(AF_INET,SOCK_STREAM,0);   //创建监听socket
-        if(listen_fd==-1){
-           perror("socket");
-           exit(EXIT_FAILURE);
-        }
+    //绑定地址的bind(),监听listen()
+    struct sockaddr_in addr;
+    memset(&addr,0,sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-        //设置端口复用
-        int reuse = 1;
-        setsockopt(listen_fd,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));
+    if(  bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr)) ==-1  ){
+        perror("bind");
+        exit(EXIT_FAILURE);
+    }
 
-        //绑定地址的bind(),监听listen()
-        struct sockaddr_in addr;
-        memset(&addr,0,sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if(  listen(listen_fd, SOMAXCONN)==-1  ){
+        perror("listen");
+        exit(EXIT_FAILURE);
+    }
 
-        if(  bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr)) ==-1  ){
-            perror("bind");
-            exit(EXIT_FAILURE);
-        }
+    // 1.创建epoll实例
+    epoll_fd = epoll_create1(0);
+    if (epoll_fd==-1){
+        perror("epoll_createl");
+        exit(EXIT_FAILURE);
+    }
 
-        if(  listen(listen_fd, SOMAXCONN)==-1  ){
-            perror("listen");
-            exit(EXIT_FAILURE);
-        }
+    // 2.将监听fd加入epoll(LT)
+    struct epoll_event ev; 
+    ev.events = EPOLLIN; //LT模式监听可读事件
+    ev.data.fd = listen_fd;  //ev.data.fd存储socket, epoll_wait返回时通过这个就知道是哪个socket就绪
+    epoll_ctl(epoll_fd,EPOLL_CTL_ADD,listen_fd,&ev);  //加进去
 
-        // 1.创建epoll实例
-        epoll_fd = epoll_create1(0);
-        if (epoll_fd==-1){
-            perror("epoll_createl");
-            exit(EXIT_FAILURE);
-        }
+    std::cout<<"[Server] start on port "<<port<<std::endl;
+}
 
-        // 2.将监听fd加入epoll(LT)
-        struct epoll_event ev; 
-        ev.events = EPOLLIN; //LT模式监听可读事件
-        ev.data.fd = listen_fd;  //ev.data.fd存储socket, epoll_wait返回时通过这个就知道是哪个socket就绪
-        epoll_ctl(epoll_fd,EPOLL_CTL_ADD,listen_fd,&ev);  //加进去
-
-        std::cout<<"[Server] start on port "<<port<<std::endl;
-      }
-
-      //运行事件循环
-      void run(){
-        while(true){
-            int nfds = epoll_wait(epoll_fd,events_,Max_events,-1);
-            
-            for (int i = 0; i < nfds; i++){
-              int fd = events_[i].data.fd;
-              uint32_t ev = events_[i].events;
-              
-              if(fd==listen_fd){ //新连接
-                handle_accept();
-              }
-              else if(ev & EPOLLIN){ //可读事件(客户端在发信息)
-                handle_read(fd);
-              }
-              else if(ev & EPOLLOUT){ //可写时间(服务器给客户端发信息)
-                //暂时不要
-              }
-              else if(ev & (EPOLLERR|EPOLLHUP)){
-                close_client(fd,"Error/Hangup");
-              }
-            }
-        }
-      }
-       
-
-      private:
-      
-       void handle_accept() {
-        struct sockaddr_in client_addr;
-        socklen_t len = sizeof(client_addr);
+//运行事件循环
+void epoll_server::run(){
+    while(true){
+        int nfds = epoll_wait(epoll_fd,events_,Max_events,-1);
         
-        // LT模式下循环accept直到返回-1且errno==EAGAIN
-        while (true) {
-            int conn_fd = accept(listen_fd, (struct sockaddr*)&client_addr, &len);
-            if (conn_fd == -1) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    break; // 所有连接处理完毕
-                } else {
-                    perror("accept");
-                    break;
-                }
-            }
-            
-            // 设置为非阻塞并加入epoll
-            set_nonblocking(conn_fd);
-            struct epoll_event ev;
-            ev.events = EPOLLIN | EPOLLET; // ET模式给客户端fd更高效（可选）
-            ev.data.fd = conn_fd;
-            epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_fd, &ev);
-            
-            // 记录客户端信息
-            char ip[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
-            client_s[conn_fd] = std::string(ip) + ":" + std::to_string(ntohs(client_addr.sin_port));
-            
-            std::cout << "[Connect] " << client_s[conn_fd] 
-                      << " (fd=" << conn_fd << ")" << std::endl;
+        for (int i = 0; i < nfds; i++){
+          int fd = events_[i].data.fd;
+          uint32_t ev = events_[i].events;
+          
+          if(fd==listen_fd){ //新连接
+            handle_accept();
+          }
+          else if(ev & EPOLLIN){ //可读事件(客户端在发信息)
+            handle_read(fd);
+          }
+          else if(ev & EPOLLOUT){ //可写事件(服务器给客户端发信息)
+            //暂时不要
+          }
+          else if(ev & (EPOLLERR|EPOLLHUP)){
+            close_client(fd,"Error/Hangup");
+          }
         }
     }
-        void handle_read(int fd) {
-        char buf[Buf_size];
-        
-        // LT模式下读一次即可，ET模式下需要循环读到EAGAIN
-        ssize_t n = read(fd, buf, sizeof(buf) - 1);
-        
-        if (n > 0) {
-            buf[n] = '\0';
-            std::cout << "[Recv] fd=" << fd << " (" << client_s[fd] 
-                      << "): " << buf << std::endl;
-            
-            // Echo回写（简单处理：假设一次write能写完）
-            ssize_t sent = write(fd, buf, n);
-            if (sent == -1) {
-                if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                    close_client(fd, "Write error");
-                    return;
-                }
+}
+
+void epoll_server::handle_accept() {
+    struct sockaddr_in client_addr;
+    socklen_t len = sizeof(client_addr);
+    
+    // LT模式下循环accept直到返回-1且errno==EAGAIN
+    while (true) {
+        int conn_fd = accept(listen_fd, (struct sockaddr*)&client_addr, &len);
+        if (conn_fd == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break; // 所有连接处理完毕
+            } 
+            else {
+                perror("accept");
+                break;
             }
-            std::cout << "[Send] fd=" << fd << " echoed " << sent << " bytes" << std::endl;
-            
-        } else if (n == 0) {
-            // 客户端主动关闭（发送FIN）
-            close_client(fd, "Client closed");
-        } else { // n == -1
+        }
+        
+        // 设置为非阻塞并加入epoll
+        set_nonblocking(conn_fd);
+        struct epoll_event ev;
+        ev.events = EPOLLIN | EPOLLET; // ET模式给客户端
+        ev.data.fd = conn_fd;
+        epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_fd, &ev);
+        
+        // 记录客户端信息
+        char ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
+        client_s[conn_fd] = std::string(ip) + ":" + std::to_string(ntohs(client_addr.sin_port));
+        
+        std::cout << "[Connect] " << client_s[conn_fd] 
+                  << " (fd=" << conn_fd << ")" << std::endl;
+    }
+}
+
+void epoll_server::handle_read(int fd) {
+    char buf[Buf_size];
+    
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);  // LT模式下读,等效于send()
+    
+    if (n > 0) {
+        buf[n] = '\0';
+        std::cout << "[Recv] fd=" << fd << " (" << client_s[fd] 
+                  << "): " << buf << std::endl;
+        
+        // Echo回写（简单处理：假设一次write能写完）
+        ssize_t sent = write(fd, buf, n);
+        if (sent == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                close_client(fd, "Read error");
+                close_client(fd, "Write error");
+                return;
             }
         }
-    }
-
-
-      void close_client(int fd, const char* reason) {
-        std::cout << "[Disconnect] fd=" << fd 
-                  << " (" << client_s[fd] << ") Reason: " 
-                  << reason << std::endl;
+        std::cout << "[Send] fd=" << fd << " echoed " << sent << " bytes" << std::endl;
         
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
-        close(fd);
-        client_s.erase(fd);
+    } 
+    else if (n == 0) {
+        // 客户端主动关闭（发送FIN）
+        close_client(fd, "Client closed");
+    } 
+    else { // n == -1
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            close_client(fd, "Read error");
+        }
     }
+}
 
-public:
-    ~epoll_server() {
-        close(epoll_fd);
-        close(listen_fd);
-    }
+void epoll_server::close_client(int fd, const char* reason) {
+    std::cout << "[Disconnect] fd=" << fd 
+              << " (" << client_s[fd] << ") Reason: " 
+              << reason << std::endl;
+    
+    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+    close(fd);
+    client_s.erase(fd);
+}
 
-
-
-};//
+epoll_server::~epoll_server() {
+    close(epoll_fd);
+    close(listen_fd);
+}
