@@ -1,4 +1,5 @@
 #include"IO.cpp"
+#include <arpa/inet.h>  // 是inet_ntop 所需要的
 
 class epoll_server{
     private:
@@ -26,7 +27,7 @@ class epoll_server{
         memset(&addr,0,sizeof(addr));
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port);
-        addr.sin_addr.s_addr = htonl(port);
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
         if(  bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr)) ==-1  ){
             perror("bind");
@@ -82,9 +83,85 @@ class epoll_server{
 
       private:
       
-        void handle_accept(){}
-        void handle_read(int fd){}
-        void close_client(int fd,const char* reason){}
+       void handle_accept() {
+        struct sockaddr_in client_addr;
+        socklen_t len = sizeof(client_addr);
+        
+        // LT模式下循环accept直到返回-1且errno==EAGAIN
+        while (true) {
+            int conn_fd = accept(listen_fd, (struct sockaddr*)&client_addr, &len);
+            if (conn_fd == -1) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    break; // 所有连接处理完毕
+                } else {
+                    perror("accept");
+                    break;
+                }
+            }
+            
+            // 设置为非阻塞并加入epoll
+            set_nonblocking(conn_fd);
+            struct epoll_event ev;
+            ev.events = EPOLLIN | EPOLLET; // ET模式给客户端fd更高效（可选）
+            ev.data.fd = conn_fd;
+            epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_fd, &ev);
+            
+            // 记录客户端信息
+            char ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
+            client_s[conn_fd] = std::string(ip) + ":" + std::to_string(ntohs(client_addr.sin_port));
+            
+            std::cout << "[Connect] " << client_s[conn_fd] 
+                      << " (fd=" << conn_fd << ")" << std::endl;
+        }
+    }
+        void handle_read(int fd) {
+        char buf[Buf_size];
+        
+        // LT模式下读一次即可，ET模式下需要循环读到EAGAIN
+        ssize_t n = read(fd, buf, sizeof(buf) - 1);
+        
+        if (n > 0) {
+            buf[n] = '\0';
+            std::cout << "[Recv] fd=" << fd << " (" << client_s[fd] 
+                      << "): " << buf << std::endl;
+            
+            // Echo回写（简单处理：假设一次write能写完）
+            ssize_t sent = write(fd, buf, n);
+            if (sent == -1) {
+                if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    close_client(fd, "Write error");
+                    return;
+                }
+            }
+            std::cout << "[Send] fd=" << fd << " echoed " << sent << " bytes" << std::endl;
+            
+        } else if (n == 0) {
+            // 客户端主动关闭（发送FIN）
+            close_client(fd, "Client closed");
+        } else { // n == -1
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                close_client(fd, "Read error");
+            }
+        }
+    }
+
+
+      void close_client(int fd, const char* reason) {
+        std::cout << "[Disconnect] fd=" << fd 
+                  << " (" << client_s[fd] << ") Reason: " 
+                  << reason << std::endl;
+        
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+        close(fd);
+        client_s.erase(fd);
+    }
+
+public:
+    ~epoll_server() {
+        close(epoll_fd);
+        close(listen_fd);
+    }
 
 
 
