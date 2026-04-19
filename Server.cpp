@@ -28,7 +28,7 @@ epoll_server::epoll_server(int port){
         perror("listen");
         exit(EXIT_FAILURE);
     }
-    set_nonblocking(listen_fd);  //new
+    set_nonblocking(listen_fd);  //  AI改的错(根因是 accept 循环与 socket 阻塞模式不匹配：),有点迷糊了
 
     // 1.创建epoll实例
     epoll_fd = epoll_create1(0);
@@ -50,12 +50,11 @@ epoll_server::epoll_server(int port){
 void epoll_server::run(){
     while(true){
         int nfds = epoll_wait(epoll_fd,events_,Max_events,-1);
-        std::cout << "[DEBUG] epoll_wait returned: " << nfds << " events" << std::endl;         //测试BUG
 
         for (int i = 0; i < nfds; i++){
           int fd = events_[i].data.fd;
           uint32_t ev = events_[i].events;
-          std::cout << "[DEBUG] event " << i << ": fd=" << fd << " events=" << ev << std::endl;  //测试BUG
+
 
           if(fd==listen_fd){ //新连接
             handle_accept();
@@ -93,7 +92,7 @@ void epoll_server::handle_accept() {
         // 设置为非阻塞并加入epoll
         set_nonblocking(conn_fd);
         struct epoll_event ev;
-        ev.events = EPOLLIN ; // LT模式给客户端(本来想用ET的)
+        ev.events = EPOLLIN|EPOLLET ; // LT模式给客户端(本来想用ET的)
         ev.data.fd = conn_fd;
         epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_fd, &ev);
         
