@@ -28,6 +28,7 @@ epoll_server::epoll_server(int port){
         perror("listen");
         exit(EXIT_FAILURE);
     }
+    set_nonblocking(listen_fd);  //new
 
     // 1.创建epoll实例
     epoll_fd = epoll_create1(0);
@@ -107,14 +108,16 @@ void epoll_server::handle_accept() {
 }
 
 void epoll_server::handle_read(int fd) {
+    std::cout << "[DEBUG handle_read] fd=" << fd << " client_s=" << (client_s.count(fd) ? client_s[fd] : "unknown") << std::endl;   //测试BUG
     char buf[Buf_size];
     
     ssize_t n = read(fd, buf, sizeof(buf) - 1);  // LT模式下读,等效于send()
-    
+    std::cout << "[DEBUG read] n=" << n << " errno=" << errno << std::endl;
+
     if (n > 0) {
         buf[n] = '\0';
         std::cout << "[Recv] fd=" << fd << " (" << client_s[fd] 
-                  << "): " << buf << std::endl;
+                  << "): " << buf << std::endl << std::flush;
         
         // Echo回写（简单处理：假设一次write能写完）
         ssize_t sent = write(fd, buf, n);
