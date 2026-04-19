@@ -49,11 +49,13 @@ epoll_server::epoll_server(int port){
 void epoll_server::run(){
     while(true){
         int nfds = epoll_wait(epoll_fd,events_,Max_events,-1);
-        
+        std::cout << "[DEBUG] epoll_wait returned: " << nfds << " events" << std::endl;         //测试BUG
+
         for (int i = 0; i < nfds; i++){
           int fd = events_[i].data.fd;
           uint32_t ev = events_[i].events;
-          
+          std::cout << "[DEBUG] event " << i << ": fd=" << fd << " events=" << ev << std::endl;  //测试BUG
+
           if(fd==listen_fd){ //新连接
             handle_accept();
           }
@@ -90,7 +92,7 @@ void epoll_server::handle_accept() {
         // 设置为非阻塞并加入epoll
         set_nonblocking(conn_fd);
         struct epoll_event ev;
-        ev.events = EPOLLIN | EPOLLET; // ET模式给客户端
+        ev.events = EPOLLIN ; // LT模式给客户端(本来想用ET的)
         ev.data.fd = conn_fd;
         epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_fd, &ev);
         
